@@ -305,15 +305,6 @@ ax.text(0.02, 0.74, stats_total_text, transform=ax.transAxes,
         fontsize=9, verticalalignment='top', 
         bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.9))
 
-# # 顯示樓層配置信息
-# config_text = "樓層配置:\n"
-# for floor_name, nodes_list in floors_config.items():
-#     config_text += f"{floor_name}: {nodes_list}\n"
-
-# ax.text(0.98, 0.98, config_text, transform=ax.transAxes, 
-#         fontsize=9, verticalalignment='top', horizontalalignment='right',
-#         bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.9))
-
 plt.show()
 
 # 打印調試信息
