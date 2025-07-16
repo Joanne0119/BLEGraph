@@ -15,11 +15,11 @@ from typing import List, Optional
 import logging
 from flask import Flask, jsonify, send_file, request
 
-# --- 配置日誌 ---
+# --- Configure Logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# --- 資料結構定義 ---
+# --- Data Structures ---
 @dataclass
 class DeviceInfo:
     device_id: str
@@ -29,7 +29,7 @@ class DeviceInfo:
 
 @dataclass
 class ParsedBLEData:
-    sender_device_id: str  # 【修正】新增發送者 ID
+    sender_device_id: str
     temperature: int
     atmospheric_pressure: float
     seconds: int
@@ -38,7 +38,7 @@ class ParsedBLEData:
     raw_timestamp: datetime
 
 class MQTTBLEDataProcessor:
-    def __init__(self, mqtt_host="localhost", mqtt_port=1883, 
+    def __init__(self, mqtt_host="localhost", mqtt_port=1883,
                  mqtt_username="root", mqtt_password="password",
                  db_path="db.db"):
         
@@ -58,64 +58,33 @@ class MQTTBLEDataProcessor:
         
         self.running = False
         self.auto_update_thread = None
-        self.current_test_group = "第一次測試" # 預設測試組別
         
     def _init_database(self):
-        """初始化數據庫表"""
+        """Initializes the database tables."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            # 原始數據表 (可選，用於追蹤)
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS raw_log (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    payload TEXT,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            # 裝置接收數據表
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS device_reception_data (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    sender_device_id TEXT,
-                    receiver_device_id TEXT,
-                    reception_rate REAL,
-                    timestamp DATETIME,
-                    test_group TEXT,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            # 平均接收率表
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS average_reception_rates (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    node_id TEXT,
-                    neighbor_id TEXT,
-                    average_reception_rate REAL,
-                    test_group TEXT,
-                    UNIQUE(node_id, neighbor_id, test_group)
-                )
-            ''')
+            cursor.execute('''CREATE TABLE IF NOT EXISTS raw_log (id INTEGER PRIMARY KEY AUTOINCREMENT, payload TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)''')
+            cursor.execute('''CREATE TABLE IF NOT EXISTS device_reception_data (id INTEGER PRIMARY KEY AUTOINCREMENT, sender_device_id TEXT, receiver_device_id TEXT, reception_rate REAL, timestamp DATETIME, test_group TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)''')
+            cursor.execute('''CREATE TABLE IF NOT EXISTS average_reception_rates (id INTEGER PRIMARY KEY AUTOINCREMENT, node_id TEXT, neighbor_id TEXT, average_reception_rate REAL, test_group TEXT, UNIQUE(node_id, neighbor_id, test_group))''')
+            cursor.execute('''CREATE TABLE IF NOT EXISTS test_group_mapping (id INTEGER PRIMARY KEY AUTOINCREMENT, app_test_id TEXT UNIQUE, display_name TEXT)''')
             conn.commit()
-            logger.info("數據庫初始化完成")
+            logger.info("Database initialized successfully.")
     
     def _on_mqtt_connect(self, client, userdata, flags, rc):
-        """MQTT 連接回調"""
+        """MQTT on_connect callback."""
         if rc == 0:
-            logger.info("MQTT 連接成功")
+            logger.info("MQTT connection successful.")
             client.subscribe("log/scanner/upload")
-            logger.info("已訂閱主題: log/scanner/upload")
+            logger.info("Subscribed to topic: log/scanner/upload")
         else:
-            logger.error(f"MQTT 連接失敗，返回碼: {rc}")
+            logger.error(f"MQTT connection failed with code: {rc}")
     
     def _on_mqtt_message(self, client, userdata, msg):
-        """MQTT 訊息處理 - 增強除錯版"""
+        """MQTT on_message callback."""
         try:
-            topic = msg.topic
             payload = msg.payload.decode('utf-8')
-            logger.info(f"收到 MQTT 訊息 - 主題: {topic}")
-            logger.info(f"原始 payload: {payload}")
+            logger.info(f"Received MQTT message on topic '{msg.topic}': {payload[:100]}...")
             
-            # 將收到的原始日誌存檔備查
             with sqlite3.connect(self.db_path) as conn:
                 conn.cursor().execute("INSERT INTO raw_log (payload) VALUES (?)", (payload,))
                 conn.commit()
@@ -123,323 +92,347 @@ class MQTTBLEDataProcessor:
             self._process_ble_log_message(payload)
                 
         except Exception as e:
-            logger.error(f"處理 MQTT 訊息時發生嚴重錯誤: {e}", exc_info=True)
+            logger.error(f"Error processing MQTT message: {e}", exc_info=True)
 
     def _process_ble_log_message(self, payload):
-        """處理 BLE 日誌訊息 - 增強除錯版"""
+        """Processes the BLE log message payload."""
         try:
-            logger.info(f"開始處理 payload: {payload}")
-            
             components = payload.split(',')
-            logger.info(f"分割後的組件數量: {len(components)}")
-            logger.info(f"組件內容: {components}")
-            
-            if len(components) < 3:
-                logger.warning(f"無效的 BLE 日誌格式 (元件不足): {payload}")
+            if len(components) % 4 != 0:
+                logger.warning(f"Invalid BLE log format (number of components is not a multiple of 4): {payload}")
                 return
-            
-            # 處理可能的多筆資料，每3個一組
-            for i in range(0, len(components), 3):
-                if i + 2 < len(components):
+
+            for i in range(0, len(components), 4):
+                if i + 3 < len(components):
                     raw_data_hex = components[i].strip()
                     rssi = components[i+1].strip()
                     timestamp_str = components[i+2].strip()
+                    app_test_id = components[i+3].strip()
                     
-                    logger.info(f"處理第 {i//3 + 1} 組數據:")
-                    logger.info(f"  - raw_data_hex: {raw_data_hex}")
-                    logger.info(f"  - rssi: {rssi}")
-                    logger.info(f"  - timestamp_str: {timestamp_str}")
-                    
+                    display_test_group = self._get_or_create_display_name(app_test_id)
+
                     try:
                         timestamp = datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S")
-                        logger.info(f"  - 時間戳解析成功: {timestamp}")
                     except ValueError as e:
-                        logger.error(f"  - 時間戳解析失敗: {e}")
+                        logger.error(f"Timestamp parsing failed: {timestamp_str} - {e}")
                         continue
                     
                     parsed_data = self._parse_ble_raw_data(raw_data_hex, timestamp)
                     if parsed_data:
-                        logger.info(f"  - 數據解析成功，發送者ID: {parsed_data.sender_device_id}")
-                        logger.info(f"  - 裝置數量: {len(parsed_data.devices)}")
-                        self._save_to_database(parsed_data)
+                        self._save_to_database(parsed_data, display_test_group)
                     else:
-                        logger.warning(f"  - 數據解析失敗")
+                        logger.warning(f"Failed to parse raw data: {raw_data_hex}")
                         
         except Exception as e:
-            logger.error(f"處理 BLE 日誌訊息時發生錯誤: {e}", exc_info=True)
+            logger.error(f"Error in _process_ble_log_message: {e}", exc_info=True)
 
     def _parse_ble_raw_data(self, raw_data_hex: str, timestamp: datetime) -> Optional[ParsedBLEData]:
-        """解析 BLE 原始數據 - 增強除錯版"""
+        """Parses the raw BLE data string."""
         try:
-            logger.info(f"開始解析原始數據: {raw_data_hex}")
-            
             cleaned_data = raw_data_hex.replace(' ', '')
-            logger.info(f"清理後的數據: {cleaned_data}")
-            logger.info(f"數據長度: {len(cleaned_data)} 字符")
-            
-            if len(cleaned_data) % 2 != 0:
-                logger.warning(f"無效的十六進制數據 (長度非偶數): {raw_data_hex}")
-                return None
-            
             bytes_data = bytes.fromhex(cleaned_data)
-            logger.info(f"轉換為字節後長度: {len(bytes_data)} 字節")
-            logger.info(f"字節數據: {bytes_data.hex()}")
             
-            # 根據實際數據長度調整解析邏輯
             if len(bytes_data) == 15:
-                # 如果是純15字節數據（Swift格式）
-                logger.info("檢測到15字節格式，使用Swift兼容解析")
                 return self._parse_15_byte_format(bytes_data, timestamp)
             elif len(bytes_data) >= 29:
-                # 如果是29字節格式（原Python格式）
-                logger.info("檢測到29字節格式，使用原始解析")
                 return self._parse_29_byte_format(bytes_data, timestamp)
             else:
-                logger.warning(f"不支援的數據長度: {len(bytes_data)} 字節")
+                logger.warning(f"Unsupported data length: {len(bytes_data)} bytes")
                 return None
                 
         except Exception as e:
-            logger.error(f"解析 BLE 數據 '{raw_data_hex}' 時發生錯誤: {e}", exc_info=True)
+            logger.error(f"Error parsing BLE data hex '{raw_data_hex}': {e}", exc_info=True)
             return None
 
     def _parse_15_byte_format(self, bytes_data: bytes, timestamp: datetime) -> Optional[ParsedBLEData]:
-        """解析15字節格式的數據（Swift兼容）"""
+        """Parses the 15-byte format (Swift compatible)."""
         try:
-            logger.info("使用15字節格式解析")
-            
             temperature = int(bytes_data[0])
-            logger.info(f"溫度: {temperature}")
-            
-            pressure_bytes = bytes_data[1:4]
-            atmospheric_pressure = int.from_bytes(pressure_bytes, byteorder='big') / 100.0
-            logger.info(f"大氣壓力: {atmospheric_pressure}")
-            
+            atmospheric_pressure = int.from_bytes(bytes_data[1:4], byteorder='big') / 100.0
             seconds = int(bytes_data[4])
-            logger.info(f"秒數: {seconds}")
-            
             devices = []
             for i in range(5):
-                device_block_start_index = 5 + (i * 2)
-                
-                if device_block_start_index + 1 < len(bytes_data):
-                    device_id = str(bytes_data[device_block_start_index])
-                    count = int(bytes_data[device_block_start_index + 1])
-                    
-                    if device_id != "0":  # 忽略ID為0的裝置
-                        reception_rate = count / seconds if seconds > 0 else 0
-                        devices.append(DeviceInfo(
-                            device_id=device_id,
-                            count=count,
-                            reception_rate=reception_rate,
-                            timestamp=timestamp
-                        ))
-                        logger.info(f"裝置 {i+1}: ID={device_id}, count={count}, rate={reception_rate}")
+                idx = 5 + (i * 2)
+                device_id, count = str(bytes_data[idx]), int(bytes_data[idx + 1])
+                if device_id != "0":
+                    reception_rate = count / seconds if seconds > 0 else 0
+                    devices.append(DeviceInfo(device_id, count, reception_rate, timestamp))
             
             has_reached_target = any(d.count >= 100 for d in devices)
+            sender_id = "swift_device"
             
-            # 15字節格式沒有sender_id，使用"unknown"或從其他地方獲取
-            sender_id = "unknown"
-            
-            return ParsedBLEData(
-                sender_device_id=sender_id,
-                temperature=temperature,
-                atmospheric_pressure=atmospheric_pressure,
-                seconds=seconds,
-                devices=devices,
-                has_reached_target=has_reached_target,
-                raw_timestamp=timestamp
-            )
+            return ParsedBLEData(sender_id, temperature, atmospheric_pressure, seconds, devices, has_reached_target, timestamp)
             
         except Exception as e:
-            logger.error(f"解析15字節格式時發生錯誤: {e}", exc_info=True)
+            logger.error(f"Error parsing 15-byte format: {e}", exc_info=True)
             return None
 
     def _parse_29_byte_format(self, bytes_data: bytes, timestamp: datetime) -> Optional[ParsedBLEData]:
-        """解析29字節格式的數據（原始格式）"""
-        # 原始的解析邏輯
+        """Parses the 29-byte format (original)."""
         data_bytes = bytes_data[13:28]
         sender_id = str(bytes_data[-1])
-        
         temperature = int(data_bytes[0])
-        pressure_bytes = data_bytes[1:4]
-        atmospheric_pressure = int.from_bytes(pressure_bytes, byteorder='big') / 100.0
+        atmospheric_pressure = int.from_bytes(data_bytes[1:4], byteorder='big') / 100.0
         seconds = int(data_bytes[4])
-        
         devices = []
         for i in range(5):
-            device_block_start_index = 5 + (i * 2)
-            
-            if device_block_start_index + 1 < len(data_bytes):
-                device_id = str(data_bytes[device_block_start_index])
-                count = int(data_bytes[device_block_start_index + 1])
-                
-                reception_rate = count / seconds if seconds > 0 else 0
-                devices.append(DeviceInfo(
-                    device_id=device_id,
-                    count=count,
-                    reception_rate=reception_rate,
-                    timestamp=timestamp
-                ))
+            idx = 5 + (i * 2)
+            device_id, count = str(data_bytes[idx]), int(data_bytes[idx + 1])
+            reception_rate = count / seconds if seconds > 0 else 0
+            devices.append(DeviceInfo(device_id, count, reception_rate, timestamp))
         
         has_reached_target = any(d.count >= 100 for d in devices)
-        
-        return ParsedBLEData(
-            sender_device_id=sender_id,
-            temperature=temperature,
-            atmospheric_pressure=atmospheric_pressure,
-            seconds=seconds,
-            devices=devices,
-            has_reached_target=has_reached_target,
-            raw_timestamp=timestamp
-        )
-    def _save_to_database(self, parsed_data: ParsedBLEData):
-        """ 儲存解析後的數據到數據庫"""
+        return ParsedBLEData(sender_id, temperature, atmospheric_pressure, seconds, devices, has_reached_target, timestamp)
+
+    def _save_to_database(self, parsed_data: ParsedBLEData, test_group: str):
+        """Saves parsed data to the database."""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
-                
                 for device in parsed_data.devices:
-                    cursor.execute('''
-                        INSERT INTO device_reception_data 
-                        (sender_device_id, receiver_device_id, reception_rate, timestamp, test_group)
-                        VALUES (?, ?, ?, ?, ?)
-                    ''', (
-                        parsed_data.sender_device_id, # 【修正】使用解析出的發送者 ID
-                        device.device_id,
-                        device.reception_rate,
-                        device.timestamp,
-                        self.current_test_group
-                    ))
-                
+                    cursor.execute('''INSERT INTO device_reception_data (sender_device_id, receiver_device_id, reception_rate, timestamp, test_group) VALUES (?, ?, ?, ?, ?)''', 
+                                   (parsed_data.sender_device_id, device.device_id, device.reception_rate, device.timestamp, test_group))
                 conn.commit()
-                logger.info(f"數據儲存成功 - 發送者: {parsed_data.sender_device_id}, 鄰居數量: {len(parsed_data.devices)}")
-                
-                # 每次儲存後都觸發一次平均值更新
+                logger.info(f"Data saved successfully for sender {parsed_data.sender_device_id}, test group '{test_group}'.")
                 self._update_average_rates()
-
         except Exception as e:
-            logger.error(f"儲存數據時發生錯誤: {e}", exc_info=True)
+            logger.error(f"Error saving data to database: {e}", exc_info=True)
     
     def _update_average_rates(self):
-        """更新平均接收率"""
+        """Updates the average reception rates table."""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
-                
-                cursor.execute('''
-                    SELECT 
-                        sender_device_id as node_id,
-                        receiver_device_id as neighbor_id,
-                        AVG(reception_rate) as avg_rate,
-                        test_group
-                    FROM device_reception_data
-                    GROUP BY sender_device_id, receiver_device_id, test_group
-                ''')
+                cursor.execute('''SELECT sender_device_id, receiver_device_id, AVG(reception_rate), test_group FROM device_reception_data GROUP BY sender_device_id, receiver_device_id, test_group''')
                 results = cursor.fetchall()
-                
                 for row in results:
-                    node_id, neighbor_id, avg_rate, test_group = row
-                    cursor.execute('''
-                        INSERT OR REPLACE INTO average_reception_rates
-                        (node_id, neighbor_id, average_reception_rate, test_group)
-                        VALUES (?, ?, ?, ?)
-                    ''', (node_id, neighbor_id, avg_rate, test_group))
-                
+                    cursor.execute('''INSERT OR REPLACE INTO average_reception_rates (node_id, neighbor_id, average_reception_rate, test_group) VALUES (?, ?, ?, ?)''', row)
                 conn.commit()
-                logger.info(f"平均接收率更新完成，共處理 {len(results)} 筆組合。")
-                
+                logger.info(f"Average reception rates updated for {len(results)} combinations.")
         except Exception as e:
-            logger.error(f"更新平均接收率時發生錯誤: {e}", exc_info=True)
+            logger.error(f"Error updating average rates: {e}", exc_info=True)
     
     def export_to_csv(self, output_path="data_all.csv"):
-        """匯出平均接收率到 CSV"""
+        """Exports average reception rates to a CSV file."""
         try:
             with sqlite3.connect(self.db_path) as conn:
-                df = pd.read_sql_query('''
-                    SELECT 
-                        node_id as '節點ID',
-                        neighbor_id as '鄰居ID', 
-                        average_reception_rate as '平均接收率',
-                        test_group as '測試組別'
-                    FROM average_reception_rates
-                    ORDER BY test_group, CAST(node_id AS INTEGER), CAST(neighbor_id AS INTEGER)
-                ''', conn)
-                
+                df = pd.read_sql_query('''SELECT node_id as 'Node ID', neighbor_id as 'Neighbor ID', average_reception_rate as 'Average Reception Rate', test_group as 'Test Group' FROM average_reception_rates ORDER BY test_group, CAST(node_id AS INTEGER), CAST(neighbor_id AS INTEGER)''', conn)
                 df.to_csv(output_path, index=False, encoding='utf-8-sig')
-                logger.info(f"CSV 匯出成功: {output_path}")
+                logger.info(f"CSV exported successfully: {output_path}")
                 return output_path
         except Exception as e:
-            logger.error(f"匯出 CSV 時發生錯誤: {e}", exc_info=True)
+            logger.error(f"Error exporting to CSV: {e}", exc_info=True)
             return None
             
     def start(self):
-        """啟動 MQTT 處理器"""
-        try:
-            self.running = True
-            self.mqtt_client.connect(self.mqtt_host, self.mqtt_port, 60)
-            self.auto_update_thread = threading.Thread(target=self._auto_update_task)
-            self.auto_update_thread.daemon = True
-            self.auto_update_thread.start()
-            self.mqtt_client.loop_forever()
-        except Exception as e:
-            logger.error(f"啟動 MQTT 處理器時發生錯誤: {e}", exc_info=True)
+        """Starts the MQTT processor."""
+        self.running = True
+        self.mqtt_client.connect(self.mqtt_host, self.mqtt_port, 60)
+        self.auto_update_thread = threading.Thread(target=self._auto_update_task, daemon=True)
+        self.auto_update_thread.start()
+        self.mqtt_client.loop_forever()
 
     def stop(self):
-        """停止 MQTT 處理器"""
+        """Stops the MQTT processor."""
         self.running = False
         if self.mqtt_client.is_connected():
             self.mqtt_client.disconnect()
-        logger.info("MQTT 處理器已停止")
+        logger.info("MQTT processor stopped.")
     
     def _auto_update_task(self):
-        """自動更新 CSV 和圖表的背景任務"""
+        """Background task to automatically update CSV and charts."""
         while self.running:
-            time.sleep(60) # 每 60 秒執行一次
-            logger.info("執行自動更新任務...")
+            time.sleep(60)
+            logger.info("Running scheduled update task...")
             csv_path = self.export_to_csv()
             if csv_path:
                 self.chart_generator.generate_chart(csv_path)
 
-# ChartGenerator 和 WebAPIServer 類別可以保持不變，此處為簡化版
+    def _get_or_create_display_name(self, app_test_id: str) -> str:
+        """Gets or creates a human-readable display name for a given test ID."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT display_name FROM test_group_mapping WHERE app_test_id = ?", (app_test_id,))
+            result = cursor.fetchone()
+            if result:
+                return result[0]
+            else:
+                cursor.execute("SELECT count(id) FROM test_group_mapping")
+                count = cursor.fetchone()[0]
+                new_display_name = f"Test #{count + 1}"
+                cursor.execute("INSERT INTO test_group_mapping (app_test_id, display_name) VALUES (?, ?)", (app_test_id, new_display_name))
+                conn.commit()
+                logger.info(f"New test ID '{app_test_id}' detected. Assigned name: '{new_display_name}'")
+                return new_display_name
+            
+    def clear_all_data(self):
+        """Clears all relevant data tables."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                logger.warning("!!! Clearing all database tables !!!")
+                tables = ['device_reception_data', 'average_reception_rates', 'raw_log', 'test_group_mapping']
+                for table in tables:
+                    cursor.execute(f"DELETE FROM {table}")
+                    logger.info(f"Cleared table: {table}")
+                cursor.execute(f"DELETE FROM sqlite_sequence WHERE name IN ({','.join('?'*len(tables))})", tables)
+                logger.info("Reset ID counters.")
+                conn.commit()
+                logger.warning("Database cleared successfully!")
+                return True
+        except Exception as e:
+            logger.error(f"Error clearing database: {e}", exc_info=True)
+            return False
+
 class ChartGenerator:
     def __init__(self, db_path):
         self.db_path = db_path
-        try:
-            plt.rcParams['font.family'] = 'Microsoft JhengHei'  # Windows
-        except:
-            try:
-                plt.rcParams['font.family'] = 'PingFang TC'  # macOS
-            except:
-                try:
-                    plt.rcParams['font.family'] = 'SimHei'  # 簡體中文
-                except:
-                    plt.rcParams['font.family'] = 'DejaVu Sans'  # 備用字體
+        # No longer need to set Chinese fonts. Matplotlib will use its default.
+        plt.rcParams['axes.unicode_minus'] = False
+        logger.info("ChartGenerator initialized.")
+        
+        self.floors_config = self.load_config()
+        self.color_palette = ['#D4A574', '#9FD4E8', '#E8A5A5', '#A5E8A5', '#E8C5E8', '#E8E8A5', '#C5E8E8', '#E8C5A5']
 
-    
-    def generate_chart(self, csv_path="testData_all.csv", output_path="chart.png"):
-        # (此處省略詳細的繪圖邏輯，可直接使用您原有的程式碼)
+    def load_config(self, config_path='bleConfig.json'):
+        """Loads floor configuration from a JSON file."""
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+            return config.get('floors', {})
+        except FileNotFoundError:
+            logger.warning(f"Config file not found at '{config_path}'. Using default floor config.")
+            return {'floor1': [1, 2, 3, 4, 5], 'floor2': [6, 7, 8, 9, 10]}
+
+    def get_node_floor(self, node_id, floors_config):
+        """Gets the floor for a given node ID."""
+        try:
+            node_int = int(node_id)
+            for floor_name, nodes in floors_config.items():
+                if node_int in nodes:
+                    return floor_name
+        except ValueError: pass
+        return None
+
+    def get_same_floor_neighbors(self, node_id, floors_config, df, test_group):
+        node_floor = self.get_node_floor(node_id, floors_config)
+        if not node_floor: return []
+        same_floor_nodes = [str(n) for n in floors_config[node_floor] if str(n) != node_id]
+        connections = df[(df['Node ID'] == node_id) & (df['Neighbor ID'].isin(same_floor_nodes)) & (df['Test Group'] == test_group)]
+        return connections.nlargest(2, 'Average Reception Rate')['Neighbor ID'].tolist()
+
+    def get_cross_floor_neighbors(self, node_id, floors_config, df, test_group):
+        node_floor = self.get_node_floor(node_id, floors_config)
+        if not node_floor: return []
+        other_floor_nodes = []
+        for floor_name, nodes in floors_config.items():
+            if floor_name != node_floor:
+                other_floor_nodes.extend([str(n) for n in nodes])
+        connections = df[(df['Node ID'] == node_id) & (df['Neighbor ID'].isin(other_floor_nodes)) & (df['Test Group'] == test_group)]
+        return connections.nlargest(2, 'Average Reception Rate')['Neighbor ID'].tolist()
+
+    def generate_mappings(self, nodes, test_groups, df):
+        same_floor_mapping, cross_floor_mapping = {}, {}
+        for node in nodes:
+            same_neighbors_all, cross_neighbors_all = [], []
+            for test_group in test_groups:
+                same_neighbors_all.extend(self.get_same_floor_neighbors(node, self.floors_config, df, test_group))
+                cross_neighbors_all.extend(self.get_cross_floor_neighbors(node, self.floors_config, df, test_group))
+            same_floor_mapping[node] = list(set(same_neighbors_all))
+            cross_floor_mapping[node] = list(set(cross_neighbors_all))
+        return same_floor_mapping, cross_floor_mapping
+
+    def generate_chart(self, csv_path="data_all.csv", output_path="chart.png"):
+        """Generates a stacked bar chart from the CSV data."""
         try:
             if not os.path.exists(csv_path) or os.path.getsize(csv_path) == 0:
-                logger.warning(f"CSV 檔案不存在或為空: {csv_path}，跳過圖表生成。")
-                return None
-            df = pd.read_csv(csv_path)
-            if df.empty:
-                logger.warning("CSV 檔案內容為空，跳過圖表生成。")
+                logger.warning(f"CSV file '{csv_path}' not found or is empty. Skipping chart generation.")
                 return None
             
-            fig, ax = plt.subplots(figsize=(10, 6))
-            df_grouped = df.groupby('節點ID')['平均接收率'].sum()
-            if not df_grouped.empty:
-                df_grouped.plot(kind='bar', ax=ax)
-                ax.set_title('各節點總平均接收率')
-                ax.set_ylabel('總平均接收率')
-                plt.tight_layout()
-                plt.savefig(output_path)
+            df = pd.read_csv(csv_path)
+            if df.empty:
+                logger.warning("CSV file is empty. Skipping chart generation.")
+                return None
+            
+            df['Node ID'] = df['Node ID'].astype(str)
+            df['Neighbor ID'] = df['Neighbor ID'].astype(str)
+            df['Test Group'] = df['Test Group'].astype(str)
+            
+            nodes = sorted(df['Node ID'].unique(), key=lambda x: int(x))
+            test_groups = sorted(df['Test Group'].unique())
+            group_colors = {group: self.color_palette[i % len(self.color_palette)] for i, group in enumerate(test_groups)}
+            
+            x = np.arange(len(nodes))
+            bar_width = 0.35 if len(test_groups) <= 2 else 0.3
+            group_gap = 0.1
+            fig, ax = plt.subplots(figsize=(16, 8))
+            
+            for i, test_group in enumerate(test_groups):
+                x_offset = (i - (len(test_groups) - 1) / 2) * (bar_width + group_gap / len(test_groups))
+                x_pos = x + x_offset
+                for j, node in enumerate(nodes):
+                    group = df[(df['Node ID'] == node) & (df['Test Group'] == test_group)]
+                    if len(group) == 0: continue
+                    stack_bottom = 0
+                    group = group.sort_values('Average Reception Rate', ascending=False)
+                    for _, row in group.iterrows():
+                        recv, neighbor = row['Average Reception Rate'], row['Neighbor ID']
+                        node_floor, neighbor_floor = self.get_node_floor(node, self.floors_config), self.get_node_floor(neighbor, self.floors_config)
+                        alpha = 0.9 if node_floor == neighbor_floor else 0.4
+                        ax.bar(x_pos[j], recv, width=bar_width, bottom=stack_bottom, color=group_colors[test_group], edgecolor='white', linewidth=0.5, alpha=alpha)
+                        if recv > 0:
+                            ax.text(x_pos[j], stack_bottom + recv * 0.7, neighbor, ha='center', va='center', fontsize=9, color='red', fontweight='bold')
+                            ax.text(x_pos[j], stack_bottom + recv * 0.2, f'{recv:.1f}', ha='center', va='center', fontsize=8, color='black')
+                        stack_bottom += recv
+            
+            ax.set_xticks(x)
+            ax.set_xticklabels([f'{node:0>2}' for node in nodes])
+            ax.set_xlabel('Node ID', fontsize=12)
+            ax.set_ylabel('Average Reception Rate (packets/sec)', fontsize=12)
+            ax.set_title('Node Reception Rate Comparison by Test Group', fontsize=14, fontweight='bold')
+            
+            y_max = df.groupby(['Node ID', 'Test Group'])['Average Reception Rate'].sum().max()
+            ax.set_ylim(0, y_max * 1.1 if pd.notna(y_max) and y_max > 0 else 1)
+            ax.grid(True, axis='y', linestyle='--', alpha=0.3)
+            
+            legend_elements = [plt.Rectangle((0,0),1,1, facecolor=group_colors[group], alpha=0.9, label=f'{group} (Same Floor)') for group in test_groups]
+            legend_elements += [plt.Rectangle((0,0),1,1, facecolor=group_colors[group], alpha=0.4, label=f'{group} (Cross-Floor)') for group in test_groups]
+            ax.legend(handles=legend_elements, loc='upper right', fontsize=9)
+            
+            same_floor_mapping, cross_floor_mapping = self.generate_mappings(nodes, test_groups, df)
+            y_position, box_colors = 0.98, ['lightyellow', 'lightblue', 'lightgreen', 'lightpink', 'lightgray']
+            
+            for i, test_group in enumerate(test_groups):
+                cross_floor_data = [df[(df['Node ID'] == n) & (df['Neighbor ID'] == nb) & (df['Test Group'] == test_group)]['Average Reception Rate'].iloc[0] for n, nbs in cross_floor_mapping.items() for nb in nbs if not df[(df['Node ID'] == n) & (df['Neighbor ID'] == nb) & (df['Test Group'] == test_group)].empty]
+                same_floor_data = [df[(df['Node ID'] == n) & (df['Neighbor ID'] == nb) & (df['Test Group'] == test_group)]['Average Reception Rate'].iloc[0] for n, nbs in same_floor_mapping.items() for nb in nbs if not df[(df['Node ID'] == n) & (df['Neighbor ID'] == nb) & (df['Test Group'] == test_group)].empty]
+                
+                cross_avg, same_avg = np.mean(cross_floor_data) if cross_floor_data else 0, np.mean(same_floor_data) if same_floor_data else 0
+                total_avg = df[df['Test Group'] == test_group]['Average Reception Rate'].mean()
+                
+                stats_text = f"""{test_group} Statistics
+Same-Floor Avg: {same_avg:.2f} pkts/sec
+Cross-Floor Avg: {cross_avg:.2f} pkts/sec
+Overall Avg: {total_avg:.2f} pkts/sec"""
+                ax.text(0.02, y_position - i * 0.12, stats_text, transform=ax.transAxes, fontsize=9, verticalalignment='top', bbox=dict(boxstyle='round', facecolor=box_colors[i % len(box_colors)], alpha=0.9))
+            
+            if len(test_groups) >= 2:
+                base_group, base_avg = test_groups[0], df[df['Test Group'] == test_groups[0]]['Average Reception Rate'].mean()
+                improvement_text = f"Improvement vs {base_group}:\n"
+                for test_group in test_groups[1:]:
+                    current_avg = df[df['Test Group'] == test_group]['Average Reception Rate'].mean()
+                    improvement = ((current_avg - base_avg) / base_avg) * 100 if base_avg > 0 else 0
+                    improvement_text += f"{test_group}: {current_avg - base_avg:+.2f} pkts/sec ({improvement:+.1f}%)\n"
+                ax.text(0.02, y_position - len(test_groups) * 0.12, improvement_text, transform=ax.transAxes, fontsize=9, verticalalignment='top', bbox=dict(boxstyle='round', facecolor='lightcyan', alpha=0.9))
+            
+            plt.tight_layout()
+            plt.savefig(output_path, dpi=300, bbox_inches='tight')
             plt.close(fig)
-            logger.info(f"圖表生成成功: {output_path}")
+            
+            logger.info(f"Chart generated successfully: {output_path}")
             return output_path
+            
         except Exception as e:
-            logger.error(f"生成圖表時發生錯誤: {e}", exc_info=True)
+            logger.error(f"Error generating chart: {e}", exc_info=True)
             return None
 
 class WebAPIServer:
@@ -452,44 +445,41 @@ class WebAPIServer:
     def _setup_routes(self):
         @self.app.route('/')
         def index():
-            return "<h1>BLE 數據後端服務 (RawData)</h1><p><a href='/api/chart'>查看圖表</a></p><p><a href='/api/data'>下載 CSV</a></p>"
+            return "<h1>BLE Data Backend Service</h1><p><a href='/api/chart'>View Chart</a></p><p><a href='/api/data'>Download CSV</a></p>"
         @self.app.route('/api/chart')
         def get_chart():
-            if not os.path.exists("chart.png"): return jsonify({'error': '圖表檔案尚未生成'}), 404
+            if not os.path.exists("chart.png"): return jsonify({'error': 'Chart file not yet generated.'}), 404
             return send_file("chart.png", mimetype='image/png')
         @self.app.route('/api/data')
         def get_data():
             csv_path = self.processor.export_to_csv()
-            if not csv_path: return jsonify({'error': '無法匯出 CSV'}), 500
+            if not csv_path: return jsonify({'error': 'Failed to export CSV.'}), 500
             return send_file(csv_path, mimetype='text/csv')
-        @self.app.route('/api/test_group', methods=['POST'])
-        def set_test_group():
+        @self.app.route('/api/clear_database', methods=['POST'])
+        def clear_database():
             data = request.json
-            test_group = data.get('test_group')
-            if not test_group: return jsonify({'error': 'test_group is required'}), 400
-            self.processor.current_test_group = test_group
-            logger.info(f"測試組別已透過 API 設定為: {test_group}")
-            return jsonify({'message': f'Test group set to {test_group}'})
+            if not data or data.get('confirm') != 'yes':
+                return jsonify({'error': 'Dangerous operation. Please include {"confirm": "yes"} in the JSON body to confirm.'}), 400
+            if self.processor.clear_all_data():
+                return jsonify({'message': 'Database cleared successfully.'}), 200
+            else:
+                return jsonify({'error': 'Internal error while clearing the database.'}), 500
 
     def start(self):
         self.app.run(host='0.0.0.0', port=self.port, debug=False)
 
-# --- 主程式 ---
 if __name__ == "__main__":
-    # 讀取 config.json 設定檔
     try:
         with open('bleConfig.json', 'r') as f:
             config = json.load(f)
-        logger.info("成功讀取 bleConfig.json 設定檔")
+        logger.info("Configuration file 'bleConfig.json' loaded successfully.")
     except FileNotFoundError:
-        logger.error("錯誤：找不到 bleConfig.json 檔案！")
-        exit() # 如果找不到設定檔，就結束程式
+        logger.error("Error: Configuration file 'bleConfig.json' not found!")
+        exit()
     except json.JSONDecodeError:
-        logger.error("錯誤：bleConfig.json 檔案格式不正確！")
+        logger.error("Error: Configuration file 'bleConfig.json' is not valid JSON.")
         exit()
 
-    # 從設定檔中獲取參數並實例化處理器
-    # 【重要】將讀取到的設定傳入 class 中
     processor = MQTTBLEDataProcessor(
         mqtt_host=config['mqtt']['host'],
         mqtt_port=config['mqtt']['port'],
@@ -498,16 +488,15 @@ if __name__ == "__main__":
         db_path=config['database']['path']
     )
     
-    # 從設定檔獲取 Web 伺服器端口
     web_server_port = config['web_server']['port']
     web_server = WebAPIServer(processor, port=web_server_port)
     
     web_thread = threading.Thread(target=web_server.start, daemon=True)
     web_thread.start()
-    logger.info(f"Web API 伺服器啟動在 http://0.0.0.0:{web_server_port}")
+    logger.info(f"Web API server started at http://0.0.0.0:{web_server_port}")
     
     try:
         processor.start()
     except KeyboardInterrupt:
-        logger.info("收到中斷信號，正在停止...")
+        logger.info("Interrupt signal received, stopping...")
         processor.stop()
