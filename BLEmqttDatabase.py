@@ -265,6 +265,40 @@ class MQTTBLEDataProcessor:
                 logger.info(f"New test ID '{app_test_id}' detected. Assigned name: '{new_display_name}'")
                 return new_display_name
             
+    def get_all_test_groups(self):
+        """Retrieves a list of all unique test group display names."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT DISTINCT display_name FROM test_group_mapping ORDER BY display_name")
+                results = cursor.fetchall()
+                return [row[0] for row in results]
+        except Exception as e:
+            logger.error(f"Error getting test groups: {e}", exc_info=True)
+            return []
+
+    def delete_test_group_data(self, display_name: str):
+        """Deletes all data associated with a specific test group display name."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                logger.warning(f"!!! Attempting to delete all data for test group: '{display_name}' !!!")
+                cursor.execute("DELETE FROM device_reception_data WHERE test_group = ?", (display_name,))
+                logger.info(f"Deleted from device_reception_data for group '{display_name}'.")
+                cursor.execute("DELETE FROM average_reception_rates WHERE test_group = ?", (display_name,))
+                logger.info(f"Deleted from average_reception_rates for group '{display_name}'.")
+                cursor.execute("DELETE FROM test_group_mapping WHERE display_name = ?", (display_name,))
+                logger.info(f"Deleted from test_group_mapping for group '{display_name}'.")
+
+                # can't delete from raw_log as it's a permanent audit log without a direct test_group link.
+
+                conn.commit()
+                logger.warning(f"Successfully deleted all data for test group: '{display_name}'.")
+                return True
+        except Exception as e:
+            logger.error(f"Error deleting test group '{display_name}': {e}", exc_info=True)
+            return False
+            
     def clear_all_data(self):
         """Clears all relevant data tables."""
         try:
@@ -392,7 +426,7 @@ class ChartGenerator:
             ax.set_title('Node Reception Rate Comparison by Test Group', fontsize=14, fontweight='bold')
             
             y_max = df.groupby(['Node ID', 'Test Group'])['Average Reception Rate'].sum().max()
-            ax.set_ylim(0, y_max * 1.1 if pd.notna(y_max) and y_max > 0 else 1)
+            ax.set_ylim(0, y_max * 1.5 if pd.notna(y_max) and y_max > 0 else 1)
             ax.grid(True, axis='y', linestyle='--', alpha=0.3)
             
             legend_elements = [plt.Rectangle((0,0),1,1, facecolor=group_colors[group], alpha=0.9, label=f'{group} (Same Floor)') for group in test_groups]
@@ -464,6 +498,33 @@ class WebAPIServer:
                 return jsonify({'message': 'Database cleared successfully.'}), 200
             else:
                 return jsonify({'error': 'Internal error while clearing the database.'}), 500
+        @self.app.route('/api/test_groups', methods=['GET'])
+        def get_test_groups():
+            groups = self.processor.get_all_test_groups()
+            return jsonify(groups)
+
+        @self.app.route('/api/delete_test', methods=['POST'])
+        def delete_test_group():
+            data = request.json
+            display_name = data.get('display_name') if data else None
+
+            if not display_name:
+                return jsonify({'error': 'Missing "display_name" in request body.'}), 400
+            
+            # Check if test group exists before attempting deletion
+            existing_groups = self.processor.get_all_test_groups()
+            if display_name not in existing_groups:
+                 return jsonify({'error': f"Test group '{display_name}' not found."}), 404
+
+            if self.processor.delete_test_group_data(display_name):
+                # After deletion, regenerate CSV and Chart
+                csv_path = self.processor.export_to_csv()
+                if csv_path:
+                    self.processor.chart_generator.generate_chart(csv_path)
+                return jsonify({'message': f"Successfully deleted all data for test group '{display_name}'."}), 200
+            else:
+                return jsonify({'error': f"An internal error occurred while deleting test group '{display_name}'."}), 500
+        
 
     def start(self):
         self.app.run(host='0.0.0.0', port=self.port, debug=False)
