@@ -57,7 +57,7 @@ echo "[3/7] 正在設定權限與 Python 虛擬環境..."
 sudo chown -R ${RUN_USER}:${RUN_USER} "${PROJECT_DIR}"
 sudo -u ${RUN_USER} python3 -m venv "${VENV_DIR}"
 "${VENV_DIR}/bin/pip" install --upgrade pip
-"${VENV_DIR}/bin/pip" install paho-mqtt pandas numpy matplotlib flask
+"${VENV_DIR}/bin/pip" install paho-mqtt pandas numpy matplotlib flask flask_cors
 echo "Python 環境設定完成。"
 
 # --- 4. 設定 UFW 防火牆 ---
