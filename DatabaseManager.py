@@ -51,11 +51,41 @@ class DatabaseManager:
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("SELECT DISTINCT display_name FROM test_group_mapping ORDER BY display_name")
+                cursor.execute("SELECT DISTINCT test_group FROM average_reception_rates ORDER BY test_group")
                 results = cursor.fetchall()
                 return [row[0] for row in results]
         except Exception as e:
             logger.error(f"Error getting test groups: {e}", exc_info=True)
+            return []
+        
+    def get_all_data(self):
+        """Retrieves all data from the device reception data table."""
+        try:
+            with self._get_connection() as conn:
+                df = pd.read_sql_query("SELECT * FROM device_reception_data", conn)
+                return df.to_dict(orient='records')
+        except Exception as e:
+            logger.error(f"Error retrieving all data: {e}", exc_info=True)
+            return []
+        
+    def get_all_average_rates_data(self):
+        """Retrieves all average reception rates data."""
+        try:
+            with self._get_connection() as conn:
+                df = pd.read_sql_query("SELECT * FROM average_reception_rates", conn)
+                return df.to_dict(orient='records')
+        except Exception as e:
+            logger.error(f"Error retrieving average rates data: {e}", exc_info=True)
+            return []
+        
+    def get_all_raw_logs(self):
+        """Retrieves all raw logs."""
+        try:
+            with self._get_connection() as conn:
+                df = pd.read_sql_query("SELECT * FROM raw_log", conn)
+                return df.to_dict(orient='records')
+        except Exception as e:
+            logger.error(f"Error retrieving raw logs: {e}", exc_info=True)
             return []
         
     def get_or_create_display_name(self, app_test_id: str) -> str:
@@ -129,6 +159,24 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Error deleting test group '{display_name}': {e}", exc_info=True)
             return False
+        
+    def get_average_rates_as_dataframe(self):
+        """Retrieves average reception rates as a pandas DataFrame."""
+        try:
+            with self._get_connection() as conn:
+                df = pd.read_sql_query('''
+                    SELECT 
+                        node_id as "Node ID", 
+                        neighbor_id as "Neighbor ID", 
+                        average_reception_rate as "Average Reception Rate", 
+                        test_group as "Test Group" 
+                    FROM average_reception_rates 
+                    ORDER BY "Test Group", CAST("Node ID" AS INTEGER), CAST("Neighbor ID" AS INTEGER)
+                ''', conn)
+                return df
+        except Exception as e:
+            logger.error(f"Error retrieving data as DataFrame: {e}", exc_info=True)
+            return pd.DataFrame()
         
     def export_to_csv(self, output_path="data_all.csv"):
         """Exports average reception rates to a CSV file."""

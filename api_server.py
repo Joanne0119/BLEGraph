@@ -1,10 +1,30 @@
 from flask import Blueprint, jsonify, send_file, request
 import os
+import logging
 
 api_blueprint = Blueprint('api', __name__, url_prefix='/api')
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 def create_api_blueprint(db_manager, processor, chart_generator):
     
+    @api_blueprint.route('/chart-data')
+    def get_chart_data_api():
+        try:
+            df = db_manager.get_average_rates_as_dataframe()
+            
+            if df.empty:
+                return jsonify({'error': 'No data available to generate chart data.'}), 404
+            
+            chart_data = chart_generator.get_chart_data(df)
+            
+            return jsonify(chart_data)
+            
+        except Exception as e:
+            # 增加錯誤處理
+            logger.error(f"Error in /chart-data endpoint: {e}", exc_info=True)
+            return jsonify({'error': 'An internal server error occurred.'}), 500
     @api_blueprint.route('/chart')
     def get_chart():
         chart_path = "chart.png"
@@ -27,6 +47,30 @@ def create_api_blueprint(db_manager, processor, chart_generator):
         if not csv_path:
             return jsonify({'error': 'Failed to export CSV.'}), 500
         return send_file(csv_path, mimetype='text/csv')
+    
+    @api_blueprint.route('/get_all_data', methods=['GET'])
+    def get_all_data():
+        # Retrieve data from the database
+        data = db_manager.get_all_data()
+        if not data:
+            return jsonify({'error': 'No data found.'}), 404
+        return jsonify(data)
+
+    @api_blueprint.route('/get_all_average_rates_data', methods=['GET'])
+    def get_all_average_rates_data():
+        # Retrieve data from the database
+        data = db_manager.get_all_average_rates_data()
+        if not data:
+            return jsonify({'error': 'No data found.'}), 404
+        return jsonify(data)
+    
+    @api_blueprint.route('/get_all_raw_log', methods=['GET'])
+    def get_all_raw_log():
+        # Retrieve data from the database
+        data = db_manager.get_all_raw_log()
+        if not data:
+            return jsonify({'error': 'No raw log data found.'}), 404
+        return jsonify(data)
 
     @api_blueprint.route('/clear_database', methods=['POST'])
     def clear_database():

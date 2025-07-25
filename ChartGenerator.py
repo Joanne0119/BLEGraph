@@ -157,3 +157,97 @@ Overall Avg: {total_avg:.2f} pkts/sec"""
         except Exception as e:
             logger.error(f"Error generating chart: {e}", exc_info=True)
             return None
+        
+    def get_chart_data(self, df: pd.DataFrame):
+        """
+        處理 DataFrame 並回傳一個可用於前端圖表的字典 (JSON)。
+        """
+        df = df[df['Average Reception Rate'] > 0].copy()
+
+        if df.empty:
+            logger.warning("DataFrame is empty. Cannot generate chart data.")
+            return {"nodes": [], "data_points": [], "statistics": {}}
+
+        df['Node ID'] = df['Node ID'].astype(str)
+        df['Neighbor ID'] = df['Neighbor ID'].astype(str)
+        df['Test Group'] = df['Test Group'].astype(str)
+
+        df.sort_values(by=['Test Group', 'Average Reception Rate'], ascending=[True, False], inplace=True)
+        nodes = sorted(df['Node ID'].unique(), key=lambda x: int(x))
+        test_groups = sorted(df['Test Group'].unique())
+        
+        chart_json = {
+            "nodes": nodes,         # 提供 X 軸的標籤
+            "data_points": [],      # 提供詳細的數據點
+            "statistics": {}        # 提供額外的統計數據
+        }
+
+        for _, row in df.iterrows():
+            node_id = str(row['Node ID'])
+            neighbor_id = str(row['Neighbor ID'])
+            
+            # 判斷樓層類型
+            node_floor = self.get_node_floor(node_id, self.floors_config)
+            neighbor_floor = self.get_node_floor(neighbor_id, self.floors_config)
+            floor_type = "same-floor" if node_floor == neighbor_floor else "cross-floor"
+            
+            chart_json["data_points"].append({
+                "node_id": node_id,
+                "neighbor_id": neighbor_id,
+                "reception_rate": row['Average Reception Rate'],
+                "test_group": row['Test Group'],
+                "floor_type": floor_type
+            })
+
+        for test_group in test_groups:
+            group_df = df[df['Test Group'] == test_group]
+            
+            # 計算同樓層和跨樓層的平均值
+            same_floor_sum = 0
+            same_floor_count = 0
+            cross_floor_sum = 0
+            cross_floor_count = 0
+
+            for _, row in group_df.iterrows():
+                node_floor = self.get_node_floor(str(row['Node ID']), self.floors_config)
+                neighbor_floor = self.get_node_floor(str(row['Neighbor ID']), self.floors_config)
+                rate = row['Average Reception Rate']
+                
+                if node_floor == neighbor_floor:
+                    same_floor_sum += rate
+                    same_floor_count += 1
+                else:
+                    cross_floor_sum += rate
+                    cross_floor_count += 1
+
+            
+            same_avg = same_floor_sum / same_floor_count if same_floor_count > 0 else 0
+            cross_avg = cross_floor_sum / cross_floor_count if cross_floor_count > 0 else 0
+            total_avg = group_df['Average Reception Rate'].mean()
+
+            chart_json["statistics"][test_group] = {
+                "overall_avg": round(total_avg, 2) if pd.notna(total_avg) else 0,
+                "cross_floor_avg": round(cross_avg, 2),
+                "same_floor_avg": round(same_avg, 2)
+            }
+        
+        if len(test_groups) >= 2:
+            base_group = test_groups[0]
+            base_avg = chart_json["statistics"][base_group]["overall_avg"]
+            improvements = {}
+            for test_group in test_groups[1:]:
+                current_avg = chart_json["statistics"][test_group]["overall_avg"]
+                diff = current_avg - base_avg
+                percent = (diff / base_avg) * 100 if base_avg > 0 else 0
+                improvements[test_group] = {
+                    "diff": f"{diff:+.2f}",
+                    "percent": f"{percent:+.1f}%"
+                }
+            chart_json["statistics"]["improvements"] = improvements
+
+        return chart_json
+    def _adjust_color_alpha(self, hex_color, alpha):
+        """ HEX color to RGBA"""
+        hex_color = hex_color.lstrip('#')
+        r, g, b = tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+        return f'rgba({r}, {g}, {b}, {alpha})'

@@ -81,7 +81,7 @@ class MQTTBLEDataProcessor:
                     timestamp_str = components[i+2].strip()
                     app_test_id = components[i+3].strip()
 
-                    display_test_group = self.db_manager.get_or_create_display_name(app_test_id)
+                    # display_test_group = self.db_manager.get_or_create_display_name(app_test_id)
 
                     try:
                         timestamp = datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S")
@@ -91,7 +91,7 @@ class MQTTBLEDataProcessor:
                     
                     parsed_data = self.ble_parser.parse_ble_raw_data(raw_data_hex, timestamp)
                     if parsed_data:
-                        self.db_manager.save_to_database(parsed_data, display_test_group)
+                        self.db_manager.save_to_database(parsed_data, app_test_id)
                     else:
                         logger.warning(f"Failed to parse raw data: {raw_data_hex}")
                         
