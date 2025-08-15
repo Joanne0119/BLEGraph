@@ -7,12 +7,12 @@ logger = logging.getLogger(__name__)
 class MQTTClient:
     def __init__(self, mqtt_host="localhost", mqtt_port=1883,
                  mqtt_username="root", mqtt_password="password",
-                 topic="log/scanner/upload", on_message_callback=None):
+                 topics: list = None, on_message_callback=None):
         self.mqtt_host = mqtt_host
         self.mqtt_port = mqtt_port
         self.mqtt_username = mqtt_username
         self.mqtt_password = mqtt_password
-        self.topic = topic
+        self.topics = topics if topics is not None else []
         self.on_message_callback = on_message_callback
         
         self.client = mqtt.Client(client_id=f"backend-processor-{os.getpid()}")
@@ -24,8 +24,14 @@ class MQTTClient:
         """MQTT on_connect callback."""
         if rc == 0:
             logger.info("MQTT connection successful.")
-            client.subscribe("log/scanner/upload")
-            logger.info("Subscribed to topic: log/scanner/upload")
+
+            if not self.topics:
+                logger.warning("No topics provided to subscribe to.")
+                return
+            
+            for topic in self.topics:
+                client.subscribe(topic)
+                logger.info(f"Subscribed to topic: {topic}")
         else:
             logger.error(f"MQTT connection failed with code: {rc}")
     
@@ -33,7 +39,6 @@ class MQTTClient:
         """MQTT on_message callback."""
         try:
             payload = msg.payload.decode('utf-8')
-            logger.info(f"Received MQTT message on topic '{msg.topic}': {payload[:100]}...")
 
             if self.on_message_callback:
                 self.on_message_callback(msg.topic, payload)

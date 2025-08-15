@@ -54,7 +54,18 @@ class MQTTBLEDataProcessor:
     def _on_message_callback(self, topic, payload): 
         try:
             self.db_manager.save_raw_log(payload)
-            self._process_ble_log_message(payload)
+            if topic == "log/scanner/upload":
+                logger.info(f"Processing Neighbor mode log: {payload[:100]}...")
+                self._process_ble_log_message(payload)
+            elif topic == "profile/result/upload":
+                logger.info(f"Processing Profile result: {payload}")
+                self._process_profile_result_message(payload)
+            elif topic == "profile/result/delete":
+                logger.info(f"Processing Profile delete request: {payload}")
+                self._process_profile_delete_message(payload)
+            else:
+                logger.warning(f"Received message on unhandled topic: {topic}")
+                
                 
         except Exception as e:
             logger.error(f"Error processing MQTT message payload: {e}", exc_info=True)
@@ -65,6 +76,59 @@ class MQTTBLEDataProcessor:
 
     def stop(self):
         self.mqtt_client.stop()
+    def _process_profile_delete_message(self, payload: str):
+        """Processes the Profile delete message payload."""
+        try:
+            device_id = payload.strip()
+            if not device_id:
+                logger.warning("Received empty payload for profile delete request.")
+                return
+
+            self.db_manager.delete_all_profile_results_for_device(device_id)
+
+        except Exception as e:
+            logger.error(f"An unexpected error occurred in _process_profile_delete_message: {e}", exc_info=True)
+
+    def _process_profile_result_message(self, payload: str):
+        """Processes the new Profile result message payload including raw data arrays."""
+        try:
+            # deviceID,avg_tx,avg_rx,testMethod,timestamp,testgroup,tx_array,rx_array
+            parts = payload.split(',')
+            if len(parts) != 8:
+                logger.warning(f"Invalid Profile result format. Expected 8 parts, got {len(parts)}: {payload}")
+                return
+
+            device_id = parts[0].strip()
+            avg_tx = float(parts[1].strip())
+            avg_rx = float(parts[2].strip())
+            test_method = parts[3].strip()
+            timestamp_str = parts[4].strip()
+            test_group_id = parts[5].strip()
+            
+            # Swift 端用分號(;)分隔，這裡要解析回來
+            txs_str = parts[6].strip()
+            rxs_str = parts[7].strip()
+            
+            captured_txs = [int(val) for val in txs_str.split(';') if val]
+            captured_rxs = [int(val) for val in rxs_str.split(';') if val]
+
+            timestamp = datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S")
+
+            self.db_manager.save_profile_result(
+                device_id=device_id,
+                avg_tx=avg_tx,
+                avg_rx=avg_rx,
+                test_method=test_method,
+                timestamp=timestamp,
+                test_group_id=test_group_id,
+                captured_txs=captured_txs,
+                captured_rxs=captured_rxs
+            )
+
+        except (ValueError, IndexError) as e:
+            logger.error(f"Error parsing profile result payload '{payload}': {e}", exc_info=True)
+        except Exception as e:
+            logger.error(f"An unexpected error occurred in _process_profile_result_message: {e}", exc_info=True)
 
     def _process_ble_log_message(self, payload):
         """Processes the BLE log message payload."""
@@ -91,7 +155,7 @@ class MQTTBLEDataProcessor:
                     
                     parsed_data = self.ble_parser.parse_ble_raw_data(raw_data_hex, timestamp)
                     if parsed_data:
-                        self.db_manager.save_to_database(parsed_data, app_test_id)
+                        self.db_manager.save_to_database(parsed_data, app_test_id, int(rssi))
                     else:
                         logger.warning(f"Failed to parse raw data: {raw_data_hex}")
                         
@@ -134,13 +198,19 @@ if __name__ == "__main__":
 
     chart_generator = ChartGenerator(db_path=config['database']['path'])
 
+
+    mqtt_topics = [
+        "log/scanner/upload",       # Neighbor
+        "profile/result/upload",     # Profile
+        "profile/result/delete"      # Profile 的刪除
+    ]
     mqtt_client = MQTTClient(
         mqtt_host=config['mqtt']['host'],
         mqtt_port=config['mqtt']['port'],
         mqtt_username=config['mqtt']['username'],
         mqtt_password=config['mqtt']['password'],
-        topic="log/scanner/upload",
-        on_message_callback=None 
+        topics=mqtt_topics,
+        on_message_callback=None
     )
 
     processor = MQTTBLEDataProcessor(

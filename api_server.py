@@ -8,6 +8,70 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def create_api_blueprint(db_manager, processor, chart_generator):
+
+    @api_blueprint.route('/profile_results', methods=['GET'])
+    def get_profile_results():
+        try:
+            all_results = db_manager.get_all_profile_results()
+            
+            if not all_results:
+                return jsonify({'message': 'No profile results found.'}), 404
+
+            grouped_data = {}
+            for row in all_results:
+                device_id = row['device_id']
+                test_group = row['test_group_id']
+                test_method = row['test_method']
+
+                device_dict = grouped_data.setdefault(device_id, {})
+                test_group_dict = device_dict.setdefault(test_group, {})
+                
+                # 將儲存的字串轉換回數字陣列
+                txs_str = row.get('captured_txs', '')
+                rxs_str = row.get('captured_rxs', '')
+                
+                captured_txs = [int(val) for val in txs_str.split(',') if val] if txs_str else []
+                captured_rxs = [int(val) for val in rxs_str.split(',') if val] if rxs_str else []
+                
+                test_group_dict[test_method] = {
+                    'avg_tx': row['avg_tx'],
+                    'avg_rx': row['avg_rx'],
+                    'timestamp': row['timestamp'],
+                    'captured_txs': captured_txs, # 回傳陣列
+                    'captured_rxs': captured_rxs  # 回傳陣列
+                }
+            
+            return jsonify(grouped_data)
+
+        except Exception as e:
+            logger.error(f"Error in /profile_results endpoint: {e}", exc_info=True)
+            return jsonify({'error': 'An internal server error occurred.'}), 500
+
+    
+     # --- 刪除特定profile測試組的 API ---
+    @api_blueprint.route('/profile_results/<string:device_id>/<string:test_group_id>', methods=['DELETE'])
+    def delete_profile_group(device_id, test_group_id):
+        try:
+            if db_manager.delete_profile_results_by_group(device_id, test_group_id):
+                return jsonify({'message': f"Successfully deleted profile results for device {device_id}, group {test_group_id}."}), 200
+            else:
+                return jsonify({'message': f"No profile results found for device {device_id}, group {test_group_id} to delete."}), 200
+        except Exception as e:
+            logger.error(f"Error deleting profile group for device {device_id}: {e}", exc_info=True)
+            return jsonify({'error': 'An internal server error occurred.'}), 500
+
+    # --- 刪除特定profile節點所有資料的 API ---
+    @api_blueprint.route('/profile_results/<string:device_id>', methods=['DELETE'])
+    def delete_all_profiles_for_device(device_id):
+        try:
+            if db_manager.delete_all_profile_results_for_device(device_id):
+                return jsonify({'message': f"Successfully deleted all profile results for device {device_id}."}), 200
+            else:
+                return jsonify({'message': f"No profile results found for device {device_id} to delete."}), 200
+        except Exception as e:
+            logger.error(f"Error deleting all profiles for device {device_id}: {e}", exc_info=True)
+            return jsonify({'error': 'An internal server error occurred.'}), 500
+
     
     @api_blueprint.route('/chart-data')
     def get_chart_data_api():

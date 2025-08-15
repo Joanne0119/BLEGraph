@@ -18,19 +18,71 @@ class DatabaseManager:
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''CREATE TABLE IF NOT EXISTS raw_log (id INTEGER PRIMARY KEY AUTOINCREMENT, payload TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)''')
-            cursor.execute('''CREATE TABLE IF NOT EXISTS device_reception_data (id INTEGER PRIMARY KEY AUTOINCREMENT, sender_device_id TEXT, receiver_device_id TEXT, reception_rate REAL, timestamp DATETIME, test_group TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)''')
-            cursor.execute('''CREATE TABLE IF NOT EXISTS average_reception_rates (id INTEGER PRIMARY KEY AUTOINCREMENT, node_id TEXT, neighbor_id TEXT, average_reception_rate REAL, test_group TEXT, UNIQUE(node_id, neighbor_id, test_group))''')
+            cursor.execute('''CREATE TABLE IF NOT EXISTS device_reception_data (id INTEGER PRIMARY KEY AUTOINCREMENT, sender_device_id TEXT, receiver_device_id TEXT, reception_rate REAL, timestamp DATETIME, test_group TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,  packet_rssi INTEGER)''')
+            cursor.execute('''CREATE TABLE IF NOT EXISTS average_reception_rates (id INTEGER PRIMARY KEY AUTOINCREMENT, node_id TEXT, neighbor_id TEXT, average_reception_rate REAL, test_group TEXT, average_rssi REAL, UNIQUE(node_id, neighbor_id, test_group))''')
             cursor.execute('''CREATE TABLE IF NOT EXISTS test_group_mapping (id INTEGER PRIMARY KEY AUTOINCREMENT, app_test_id TEXT UNIQUE, display_name TEXT)''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS profile_results (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    device_id TEXT NOT NULL,
+                    avg_tx REAL NOT NULL,
+                    avg_rx REAL NOT NULL,
+                    test_method TEXT NOT NULL,
+                    timestamp DATETIME NOT NULL,
+                    test_group_id TEXT NOT NULL,
+                    captured_txs TEXT, 
+                    captured_rxs TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(device_id, test_method, test_group_id) 
+                )
+            ''')
+
+
+            try:
+                cursor.execute("ALTER TABLE profile_results ADD COLUMN captured_txs TEXT")
+                logger.info("Column 'captured_txs' added to 'profile_results' table.")
+            except sqlite3.OperationalError:
+                pass # Column already exists
+            
+            try:
+                cursor.execute("ALTER TABLE profile_results ADD COLUMN captured_rxs TEXT")
+                logger.info("Column 'captured_rxs' added to 'profile_results' table.")
+            except sqlite3.OperationalError:
+                pass # Column already exists
+
             conn.commit()
             logger.info("Database initialized successfully.")
-    def save_to_database(self, parsed_data, test_group: str):
+
+    def save_profile_result(self, device_id, avg_tx, avg_rx, test_method, timestamp, test_group_id, captured_txs, captured_rxs):
+        """Saves a single profile test result, including captured raw data, to the database."""
+        
+        # 陣列轉換為逗號分隔的字串以便儲存
+        txs_str = ','.join(map(str, captured_txs))
+        rxs_str = ','.join(map(str, captured_rxs))
+
+        sql = '''
+            INSERT OR REPLACE INTO profile_results 
+            (device_id, avg_tx, avg_rx, test_method, timestamp, test_group_id, captured_txs, captured_rxs) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        '''
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(sql, (device_id, avg_tx, avg_rx, test_method, timestamp, test_group_id, txs_str, rxs_str))
+                conn.commit()
+                logger.info(f"Profile result saved for device {device_id}, method {test_method}.")
+        except Exception as e:
+            logger.error(f"Error saving profile result to database: {e}", exc_info=True)
+
+
+    def save_to_database(self, parsed_data, test_group: str, packet_rssi: int):
         """Saves parsed data to the database."""
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
                 for device in parsed_data.devices:
-                    cursor.execute('''INSERT INTO device_reception_data (sender_device_id, receiver_device_id, reception_rate, timestamp, test_group) VALUES (?, ?, ?, ?, ?)''', 
-                                   (parsed_data.sender_device_id, device.device_id, device.reception_rate, device.timestamp, test_group))
+                    cursor.execute('''INSERT INTO device_reception_data (sender_device_id, receiver_device_id, reception_rate, timestamp, test_group, packet_rssi) VALUES (?, ?, ?, ?, ?, ?)''', 
+                                   (parsed_data.sender_device_id, device.device_id, device.reception_rate, device.timestamp, test_group, packet_rssi))
                 conn.commit()
                 logger.info(f"Data saved successfully for sender {parsed_data.sender_device_id}, test group '{test_group}'.")
                 self._update_average_rates()
@@ -45,6 +97,47 @@ class DatabaseManager:
                 conn.commit()
         except Exception as e:
             logger.error(f"Error saving raw log: {e}", exc_info=True)
+
+    def get_all_profile_results(self):
+        """Retrieves all data from the profile_results table."""
+        try:
+            with self._get_connection() as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                cursor.execute("SELECT * FROM profile_results ORDER BY device_id, test_group_id, test_method")
+                rows = cursor.fetchall()
+                return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Error retrieving all profile results: {e}", exc_info=True)
+            return []
+        
+    def delete_profile_results_by_group(self, device_id, test_group_id):
+        """Deletes profile results for a specific device_id and test_group_id."""
+        sql = "DELETE FROM profile_results WHERE device_id = ? AND test_group_id = ?"
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(sql, (device_id, test_group_id))
+                conn.commit()
+                logger.info(f"Deleted profile results for device {device_id}, group {test_group_id}. Rows affected: {cursor.rowcount}")
+                return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"Error deleting profile results by group: {e}", exc_info=True)
+            return False
+
+    def delete_all_profile_results_for_device(self, device_id):
+        """Deletes all profile results for a specific device_id."""
+        sql = "DELETE FROM profile_results WHERE device_id = ?"
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(sql, (device_id,))
+                conn.commit()
+                logger.info(f"Deleted all profile results for device {device_id}. Rows affected: {cursor.rowcount}")
+                return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"Error deleting all profile results for device {device_id}: {e}", exc_info=True)
+            return False
 
     def get_all_test_groups(self):
         """Retrieves a list of all unique test group display names."""
@@ -110,10 +203,10 @@ class DatabaseManager:
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute('''SELECT sender_device_id, receiver_device_id, AVG(reception_rate), test_group FROM device_reception_data GROUP BY sender_device_id, receiver_device_id, test_group''')
+                cursor.execute('''SELECT sender_device_id, receiver_device_id, ROUND(AVG(reception_rate),2), test_group, ROUND(AVG(rssi),0) FROM device_reception_data GROUP BY sender_device_id, receiver_device_id, test_group''')
                 results = cursor.fetchall()
                 for row in results:
-                    cursor.execute('''INSERT OR REPLACE INTO average_reception_rates (node_id, neighbor_id, average_reception_rate, test_group) VALUES (?, ?, ?, ?)''', row)
+                    cursor.execute('''INSERT OR REPLACE INTO average_reception_rates (node_id, neighbor_id, average_reception_rate, test_group, average_rssi) VALUES (?, ?, ?, ?, ?)''', row)
                 conn.commit()
                 logger.info(f"Average reception rates updated for {len(results)} combinations.")
         except Exception as e:
