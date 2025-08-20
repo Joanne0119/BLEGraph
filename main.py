@@ -162,24 +162,24 @@ class MQTTBLEDataProcessor:
         except Exception as e:
             logger.error(f"Error in _process_ble_log_message: {e}", exc_info=True)
 
-def scheduled_chart_update(db_manager: DatabaseManager, chart_generator: ChartGenerator, interval_seconds=60):
+# def scheduled_chart_update(db_manager: DatabaseManager, chart_generator: ChartGenerator, interval_seconds=60):
 
-    logger.info(f"every {interval_seconds} seconds, chart will be updated.")
-    while True:
-        try:
-            time.sleep(interval_seconds)
+#     logger.info(f"every {interval_seconds} seconds, chart will be updated.")
+#     while True:
+#         try:
+#             time.sleep(interval_seconds)
             
-            logger.info("exporting to csv...")
+#             logger.info("exporting to csv...")
             
-            csv_path = db_manager.export_to_csv()
+#             csv_path = db_manager.export_to_csv()
             
-            if csv_path:
-                chart_generator.generate_chart(csv_path)
-            else:
-                logger.warning("csv data not available to generate chart.")
+#             if csv_path:
+#                 chart_generator.generate_chart(csv_path)
+#             else:
+#                 logger.warning("csv data not available to generate chart.")
                 
-        except Exception as e:
-            logger.error(f"Error in scheduled_chart_update: {e}", exc_info=True)
+#         except Exception as e:
+#             logger.error(f"Error in scheduled_chart_update: {e}", exc_info=True)
 
 if __name__ == "__main__":
     try:
@@ -232,13 +232,13 @@ if __name__ == "__main__":
     web_thread.start()
     logger.info(f"Web API server started at http://0.0.0.0:{web_server_port}")
 
-    chart_update_interval = config.get('chart_generator', {}).get('update_interval_seconds', 60)
+    # chart_update_interval = config.get('chart_generator', {}).get('update_interval_seconds', 60)
     
-    chart_thread = threading.Thread(
-        target=scheduled_chart_update,
-        args=(db_manager, chart_generator, chart_update_interval), 
-        daemon=True  
-    )
-    chart_thread.start()
+    # chart_thread = threading.Thread(
+    #     target=scheduled_chart_update,
+    #     args=(db_manager, chart_generator, chart_update_interval), 
+    #     daemon=True  
+    # )
+    # chart_thread.start()
     
     processor.start()
