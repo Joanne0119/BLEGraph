@@ -220,7 +220,14 @@ if __name__ == "__main__":
     )
 
     app = Flask(__name__)
-    CORS(app)
+    CORS(app, resources={
+        r"/api/*": {
+            "origins": [
+                "https://ble-frontend-seven.vercel.app",
+                "http://localhost:5173"
+            ]
+        }
+    })
     api_routes = create_api_blueprint(db_manager, processor, chart_generator)
     app.register_blueprint(api_routes)
 

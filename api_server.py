@@ -165,9 +165,9 @@ def create_api_blueprint(db_manager, processor, chart_generator):
              return jsonify({'error': f"Test group '{display_name}' not found."}), 404
 
         if db_manager.delete_test_group_data(display_name):
-            csv_path = db_manager.export_to_csv()
-            if csv_path:
-                chart_generator.generate_chart(csv_path)
+            # csv_path = db_manager.export_to_csv()
+            # if csv_path:
+            #     chart_generator.generate_chart(csv_path)
             return jsonify({'message': f"Successfully deleted all data for test group '{display_name}'."}), 200
         else:
             return jsonify({'error': f"An internal error occurred while deleting test group '{display_name}'."}), 500
