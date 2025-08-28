@@ -7,7 +7,7 @@ api_blueprint = Blueprint('api', __name__, url_prefix='/api')
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def create_api_blueprint(db_manager, processor, chart_generator):
+def create_api_blueprint(db_manager, processor, chart_generator, analyzer):
 
     @api_blueprint.route('/profile_results', methods=['GET'])
     def get_profile_results():
@@ -172,4 +172,13 @@ def create_api_blueprint(db_manager, processor, chart_generator):
         else:
             return jsonify({'error': f"An internal error occurred while deleting test group '{display_name}'."}), 500
 
+    @api_blueprint.route('/rankings', methods=['GET'])
+    def get_rankings():
+        try:
+            ranked_nodes = analyzer.rank_nodes_by_performance()
+            return jsonify(ranked_nodes)
+        except Exception as e:
+            logger.error(f"Error in /rankings endpoint: {e}", exc_info=True)
+            return jsonify({'error': 'An internal server error occurred during ranking.'}), 500
+    
     return api_blueprint

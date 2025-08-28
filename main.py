@@ -15,6 +15,7 @@ from DatabaseManager import DatabaseManager
 from MQTTClient import MQTTClient
 from ChartGenerator import ChartGenerator
 from BLEParser import BLEParser
+from DataAnalyzer import DataAnalyzer
 from api_server import create_api_blueprint
 
 # --- Configure Logging ---
@@ -219,6 +220,8 @@ if __name__ == "__main__":
         chart_generator=chart_generator
     )
 
+    analyzer = DataAnalyzer(db_manager=db_manager)
+
     app = Flask(__name__)
     CORS(app, resources={
         r"/api/*": {
@@ -228,7 +231,7 @@ if __name__ == "__main__":
             ]
         }
     })
-    api_routes = create_api_blueprint(db_manager, processor, chart_generator)
+    api_routes = create_api_blueprint(db_manager, processor, chart_generator, analyzer)
     app.register_blueprint(api_routes)
 
     web_server_port = config['web_server']['port']
